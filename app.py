@@ -1,37 +1,71 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-import tempfile, subprocess, os, uuid, glob, re
+import tempfile, subprocess, os, uuid, glob
+from typing import Optional
+import requests
+import base64 as _b64
 
-app = FastAPI(title="yt-clipper", version="1.0.0")
+app = FastAPI(title="yt-clipper", version="1.1.0")
 
 class CutReq(BaseModel):
     url: str = Field(..., description="YouTube link")
     start: str = Field(..., description="Start time (HH:MM:SS or MM:SS)")
     end: str = Field(..., description="End time (HH:MM:SS or MM:SS)")
-    filename: str | None = Field(default=None, description="Base filename without extension")
-    cookies_txt: str | None = Field(default=None, description="Optional cookies.txt content")
+    filename: Optional[str] = Field(default=None, description="Base filename without extension")
+    cookies_txt: Optional[str] = Field(default=None, description="Netscape cookies.txt content")
+    cookies_b64: Optional[str] = Field(default=None, description="Base64-encoded cookies.txt")
+    cookies_url: Optional[str] = Field(default=None, description="URL to cookies.txt (https://...)")
+    cookies_env: Optional[str] = Field(default=None, description="Env var name containing base64 cookies (default: YTDLP_COOKIES_B64)")
 
 def _norm_time(t: str) -> str:
     t = t.strip()
-    if not t:
-        raise ValueError("empty time")
     parts = t.split(":")
     if len(parts) == 2:
-        mm, ss = parts
-        hh = "00"
+        hh, mm, ss = "00", parts[0], parts[1]
     elif len(parts) == 3:
         hh, mm, ss = parts
     else:
         raise ValueError("time must be MM:SS or HH:MM:SS")
-    hh = hh.zfill(2)
-    mm = mm.zfill(2)
-    ss = ss.zfill(2)
-    return f"{hh}:{mm}:{ss}"
+    return f"{int(hh):02d}:{int(mm):02d}:{int(ss):02d}"
+
+def _prepare_cookies(tmpdir: str, req: CutReq):
+    content = None
+
+    if req.cookies_txt:
+        content = req.cookies_txt.encode("utf-8")
+    elif req.cookies_b64:
+        try:
+            content = _b64.b64decode(req.cookies_b64)
+        except Exception as e:
+            raise HTTPException(400, f"cookies_b64 decode error: {e}")
+    elif req.cookies_url:
+        try:
+            r = requests.get(req.cookies_url, timeout=10)
+            r.raise_for_status()
+            content = r.content
+        except Exception as e:
+            raise HTTPException(400, f"cookies_url fetch error: {e}")
+    else:
+        env_name = req.cookies_env or "YTDLP_COOKIES_B64"
+        b64 = os.getenv(env_name)
+        if b64:
+            try:
+                content = _b64.b64decode(b64)
+            except Exception as e:
+                raise HTTPException(400, f"{env_name} base64 decode error: {e}")
+
+    if not content:
+        return None
+
+    cpath = os.path.join(tmpdir, "cookies.txt")
+    with open(cpath, "wb") as f:
+        f.write(content)
+    return cpath
 
 @app.get("/")
 def root():
-    return {"ok": True, "service": "yt-clipper"}
+    return {"ok": True, "service": "yt-clipper", "version": "1.1.0"}
 
 @app.post("/cut")
 def cut(req: CutReq):
@@ -45,30 +79,29 @@ def cut(req: CutReq):
         base = req.filename or f"clip-{uuid.uuid4().hex}"
         out_tpl = os.path.join(td, base + ".%(ext)s")
 
-        # optional cookies.txt
         cookies_arg = []
-        if req.cookies_txt:
-            cpath = os.path.join(td, "cookies.txt")
-            with open(cpath, "w", encoding="utf-8") as f:
-                f.write(req.cookies_txt)
-            cookies_arg = ["--cookies", cpath]
+        cookies_path = _prepare_cookies(td, req)
+        if cookies_path:
+            cookies_arg = ["--cookies", cookies_path]
 
         cmd = [
             "yt-dlp", req.url,
             *cookies_arg,
-            "--download-sections", f"*{start}-{end}",
-            "--merge-output-format", "mp4",
             "--no-playlist",
+            "-f", "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/best",
+            "--remux-video", "mp4",
+            "--download-sections", f"*{start}-{end}",
             "-o", out_tpl,
         ]
-        try:
-            subprocess.check_call(cmd)
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(400, f"yt-dlp error: {e}")
+
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        if res.returncode != 0:
+            err = (res.stderr or res.stdout or "").strip()
+            err_tail = err[-6000:]
+            raise HTTPException(400, f"yt-dlp error:\n{err_tail}")
 
         files = glob.glob(os.path.join(td, base + ".*"))
         if not files:
             raise HTTPException(500, "file not created")
         path = files[0]
-        fname = os.path.basename(path)
-        return FileResponse(path, filename=fname, media_type="video/mp4")
+        return FileResponse(path, filename=os.path.basename(path), media_type="video/mp4")

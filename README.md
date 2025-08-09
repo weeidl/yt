@@ -1,52 +1,41 @@
-# yt-clipper (YouTube link + timecodes → clipped MP4)
+# yt-clipper v1.1
 
-Minimal service that accepts a YouTube URL and `start`/`end` timecodes, cuts the segment using `yt-dlp` (with ffmpeg), and returns an MP4.
+Cuts a YouTube clip by timecodes and returns MP4. Uses yt-dlp + ffmpeg.
+Supports multiple cookie inputs for authorized videos.
 
 ## API
 
-- `GET /` → health json
-- `POST /cut` (JSON):
-
+**POST /cut**
+Body:
 ```json
 {
   "url": "https://www.youtube.com/watch?v=XXXX",
   "start": "00:18:41",
   "end": "00:18:59",
   "filename": "my_clip",
-  "cookies_txt": null
+  "cookies_txt": null,
+  "cookies_b64": null,
+  "cookies_url": null,
+  "cookies_env": null
 }
 ```
+- Time format: `MM:SS` or `HH:MM:SS`.
+- Cookies priority: `cookies_txt` > `cookies_b64` > `cookies_url` > env var (`cookies_env` or `YTDLP_COOKIES_B64`).
 
-Returns the MP4 file directly.
+### Env var cookies (recommended on Render/Railway)
+Base64-encode your `cookies.txt` and put it into `YTDLP_COOKIES_B64` env var.
+```bash
+base64 -i cookies.txt | pbcopy
+```
+Then deploy. The service will decode it if no cookies were provided in request body.
 
-## Local run (Docker)
-
+## Docker
 ```bash
 docker build -t yt-clipper .
-docker run --rm -p 8000:8000 yt-clipper
-# test
-curl -X POST http://localhost:8000/cut \
-  -H "Content-Type: application/json" \
-  -d '{"url":"<YOUTUBE_URL>", "start":"00:00:05", "end":"00:00:08"}' \
-  --output clip.mp4
+docker run --rm -p 8000:8000 -e YTDLP_COOKIES_B64="$YTDLP_COOKIES_B64" yt-clipper
 ```
 
-## Deploy: Railway (recommended)
-
-1. Push these files to a Git repo (or upload directly in Railway).
-2. Create **New Project → Deploy from Repo** (or **From Dockerfile**).
-3. Railway will build the Dockerfile. No special settings needed.
-4. Ensure the service listens on `$PORT` (already handled in Docker CMD).
-5. After deploy, open the public URL and call `POST /cut`.
-
-## Deploy: Render
-
-1. Connect repo → **New Web Service**.
-2. Build Command: `docker build -t app .` (or use Render’s native Docker)
-3. Start Command: handled by Docker `CMD`.
-4. Exposes port `$PORT` (Render injects it; Docker CMD uses it).
-
-Notes:
-- Outputs are streamed back; no persistent storage required.
-- If a video requires cookies, send them via `cookies_txt` (netscape format).
-- Respect YouTube Terms. Use only your own content or with permission.
+## Notes
+- Prefers H.264/AAC and remuxes to mp4 to avoid WebM issues:
+  `-f "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/best" --remux-video mp4`
+- Use only for your own content or with permission; respect YouTube ToS.
