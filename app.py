@@ -92,38 +92,44 @@ def root():
 @app.post("/cut")
 def cut(req: CutReq):
     try:
-        start = _norm_time(req.start)
-        end = _norm_time(req.end)
+        start = _norm_time(req.start); end = _norm_time(req.end)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
-    with tempfile.TemporaryDirectory() as td:
-        base = req.filename or f"clip-{uuid.uuid4().hex}"
-        out_tpl = os.path.join(td, base + ".%(ext)s")
+    # 1) Уникальное имя в /tmp (НЕ удаляем сразу)
+    base = req.filename or f"clip-{uuid.uuid4().hex}"
+    out_dir = "/tmp/ytclipper"
+    os.makedirs(out_dir, exist_ok=True)
+    out_tpl = os.path.join(out_dir, base + ".%(ext)s")
+    cookies_arg = []
 
-        cookies_arg = []
-        cookies_path = _prepare_cookies(td, req)
-        if cookies_path:
-            cookies_arg = ["--cookies", cookies_path]
+    # 2) Подготовка cookies.txt (тоже в /tmp)
+    cookies_path = _prepare_cookies(out_dir, req)
+    if cookies_path:
+        cookies_arg = ["--cookies", cookies_path]
 
-        cmd = [
-            "yt-dlp", req.url,
-            *cookies_arg,
-            "--no-playlist",
-            "-f", "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/best",
-            "--remux-video", "mp4",
-            "--download-sections", f"*{start}-{end}",
-            "-o", out_tpl,
-        ]
+    # 3) yt-dlp
+    cmd = [
+        "yt-dlp", req.url, *cookies_arg,
+        "--no-playlist",
+        "-f", "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/b[ext=mp4]/best",
+        "--remux-video", "mp4",
+        "--download-sections", f"*{start}-{end}",
+        "-o", out_tpl,
+    ]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        err = (res.stderr or res.stdout or "").strip()
+        raise HTTPException(400, f"yt-dlp error:\n{err[-6000:]}")
 
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        if res.returncode != 0:
-            err = (res.stderr or res.stdout or "").strip()
-            err_tail = err[-6000:]
-            raise HTTPException(400, f"yt-dlp error:\n{err_tail}")
+    # 4) Находим готовый файл
+    import glob
+    files = glob.glob(os.path.join(out_dir, base + ".*"))
+    if not files:
+        raise HTTPException(500, "file not created")
+    path = files[0]
+    fname = os.path.basename(path)
 
-        files = glob.glob(os.path.join(td, base + ".*"))
-        if not files:
-            raise HTTPException(500, "file not created")
-        path = files[0]
-        return FileResponse(path, filename=os.path.basename(path), media_type="video/mp4")
+    # 5) Отдаём файл и после отправки удаляем
+    task = BackgroundTask(lambda p=path: (os.path.exists(p) and os.remove(p)))
+    return FileResponse(path, filename=fname, media_type="video/mp4", background=task)
