@@ -1,26 +1,23 @@
-# Railway LLM Shorts
+# yt-shorts-service
 
-FastAPI wrapper around `auto_short_llm_cache.py`
+FastAPI wrapper around `auto_short_llm_cache.py` for Railway.
 
-## Deploy
-- Create a Docker service on Railway.
-- Set env `OPENAI_API_KEY` if using LLM watermark/panel detection.
-- Deploy this directory.
+## Deploy (Dockerfile)
+Just push to Railway. It will build the Dockerfile.
 
-## API
-`POST /process` (multipart/form-data)
+Required system deps are installed in the image (ffmpeg).
 
-Fields:
-- `url` (str) — YouTube URL
-- `range` (str) OR `ranges` (str)
-- `bg` (file) — 9:16 image/video background
-- `llm` (on|off), default on
-- `vision_model` (str), default gpt-4o-mini
-- `cookies_text` (str) — optional Netscape cookie.txt content
-- `out_name` (str), default final.mp4
-- `cache` (str), default /tmp/yt_cache
+## Runtime env
+- `OPENAI_API_KEY` (optional). If missing, watermark detection is skipped.
+- `CACHE_DIR` (optional, default `/tmp/yt_cache`).
 
-Example:
-```bash
-curl -X POST "https://<host>/process"   -F 'url=https://www.youtube.com/watch?v=XXXXXXXXXXX'   -F 'range=00:01:00-00:02:00'   -F 'llm=on'   -F 'bg=@test_video.mp4'   --output result.mp4
+## Health
 ```
+GET /health
+```
+
+## Process
+```
+curl -X POST "$HOST/process"   -F "url=https://www.youtube.com/watch?v=wpIS02IrZ54"   -F "range=00:16:08-00:16:53"   -F "llm=on"   -F "bg=@/path/to/bg.mp4;type=video/mp4"   --output result.mp4
+```
+

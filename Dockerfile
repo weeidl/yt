@@ -1,17 +1,21 @@
 FROM python:3.11-slim
 
-# ffmpeg for processing
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
 
+# Python deps
 WORKDIR /app
-
-COPY requirements.txt ./
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project
+# App
 COPY . .
 
-ENV PORT=8000
+ENV CACHE_DIR=/tmp/yt_cache
+ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8000
+# Railway sets $PORT
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--http", "httptools"]
