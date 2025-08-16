@@ -1,82 +1,74 @@
-import os, tempfile, subprocess, shutil
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import StreamingResponse, PlainTextResponse, JSONResponse
-from typing import Optional
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+import tempfile, os, subprocess, shutil, uuid
 
-app = FastAPI(title="LLM Shorts", version="1.0")
+app = FastAPI(title="LLM Shorts")
 
-@app.get("/")
-async def root():
-    return {"status": "ok"}
+def run(cmd: list[str]):
+    print(">>>", " ".join(cmd), flush=True)
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if res.returncode != 0:
+        print(res.stdout)
+        raise RuntimeError(f"command failed: {' '.join(cmd)}\n{res.stdout}")
+    return res.stdout
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
 @app.post("/process")
 async def process(
     url: str = Form(...),
-    range: Optional[str] = Form(None),
-    ranges: Optional[str] = Form(None),
+    range: str | None = Form(None),
+    ranges: str | None = Form(None),
     llm: str = Form("on"),
     vision_model: str = Form("gpt-4o-mini"),
-    cache: str = Form("/tmp/yt_cache"),
-    cookies_text: Optional[str] = Form(None),
-    cookies_from_browser: Optional[str] = Form(None),
-    bg: UploadFile = File(...),
+    cookies_text: str | None = Form(None),
     out_name: str = Form("final.mp4"),
+    cache: str = Form("/tmp/yt_cache"),
+    bg: UploadFile = File(...),
 ):
     if not range and not ranges:
-        return PlainTextResponse("Provide 'range' or 'ranges'.", status_code=400)
+        raise HTTPException(400, "Provide 'range' or 'ranges'")
 
-    workdir = tempfile.mkdtemp(prefix="api_work_")
+    work = tempfile.mkdtemp(prefix="api_")
     try:
-        # Save background
-        bg_path = os.path.join(workdir, bg.filename or "bg.bin")
+        # save bg to file
+        bg_path = os.path.join(work, bg.filename or "bg.bin")
         with open(bg_path, "wb") as f:
-            f.write(await bg.read())
+            shutil.copyfileobj(bg.file, f)
 
-        # Optional cookies from text (Netscape format)
+        # optional cookies file (for age-restricted videos)
         cookies_path = None
         if cookies_text:
-            cookies_path = os.path.join(workdir, "cookies.txt")
+            cookies_path = os.path.join(work, "cookies.txt")
             with open(cookies_path, "w") as f:
                 f.write(cookies_text)
 
-        # Output path
-        out_path = os.path.join(workdir, out_name)
+        out_path = os.path.join(work, out_name)
 
-        # Ensure cache dir
-        os.makedirs(cache, exist_ok=True)
-
-        cmd = [
-            os.sys.executable, "auto_short_llm_cache.py",
-            "--url", url,
-            "--bg", bg_path,
-            "--out", out_path,
-            "--cache", cache,
-            "--llm", llm,
-            "--vision_model", vision_model,
-        ]
+        cmd = ["python", "auto_short_llm_cache.py",
+               "--url", url,
+               "--bg", bg_path,
+               "--out", out_path,
+               "--cache", cache,
+               "--llm", llm,
+               "--vision_model", vision_model]
         if range:
             cmd += ["--range", range]
         if ranges:
             cmd += ["--ranges", ranges]
         if cookies_path:
             cmd += ["--cookies", cookies_path]
-        if cookies_from_browser:
-            cmd += ["--cookies-from-browser", cookies_from_browser]
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0 or not os.path.exists(out_path):
-            return PlainTextResponse(proc.stdout + "\n" + proc.stderr, status_code=500)
+        run(cmd)
 
-        def file_iterator(path):
-            with open(path, "rb") as f:
-                while True:
-                    chunk = f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
+        if not os.path.exists(out_path):
+            raise HTTPException(500, "Output not created")
 
-        headers = {"Content-Disposition": f'attachment; filename="{os.path.basename(out_path)}"'}
-        return StreamingResponse(file_iterator(out_path), media_type="video/mp4", headers=headers)
+        return FileResponse(out_path, media_type="video/mp4", filename=out_name)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
     finally:
-        # keep cache directory
+        # keep workdir if you want debugging
         pass

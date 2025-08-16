@@ -1,22 +1,17 @@
-# Railway Dockerfile
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
-
-# ffmpeg + runtime deps
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg ca-certificates tzdata && \
-    rm -rf /var/lib/apt/lists/*
+# ffmpeg for processing
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt /app/
-RUN pip install -r requirements.txt
 
-COPY . /app/
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Railway provides $PORT
-ENV PORT=8080
-EXPOSE 8080
+# Copy project
+COPY . .
 
-CMD ["bash", "-lc", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
+ENV PORT=8000
+
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
